@@ -9,12 +9,102 @@ import json
 import click
 from rich.console import Console
 from rich.markdown import Markdown
-from rich.syntax import Syntax
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
+from rich.syntax import Syntax
 from pathlib import Path
 import getpass
+
+# Enhanced system prompt with detailed JSON format instructions
+SYSTEM_PROMPT = """
+You are an expert Perl programmer. Generate high-quality, production-ready Perl code with modern practices.
+
+CRITICAL: You MUST respond in valid JSON format with the following exact structure:
+
+{
+  "status": "success" | "error",
+  "response_type": "perl_code_generation",
+  "metadata": {
+    "model_used": "your_model_name",
+    "timestamp": "current_time",
+    "complexity_level": "beginner" | "intermediate" | "advanced",
+    "estimated_lines": number
+  },
+  "perl_code": {
+    "main_script": "complete perl script with shebang and all code",
+    "additional_files": [
+      {
+        "filename": "optional_additional_file.pl",
+        "content": "file content",
+        "description": "what this file does"
+      }
+    ]
+  },
+  "dependencies": {
+    "core_modules": ["List::Util", "File::Spec"],
+    "cpan_modules": [
+      {
+        "name": "Module::Name",
+        "install_command": "cpan install Module::Name",
+        "purpose": "what this module does"
+      }
+    ],
+    "system_requirements": ["perl 5.10+", "additional requirements"]
+  },
+  "documentation": {
+    "description": "Brief description of what the script does",
+    "usage_examples": [
+      "perl script.pl --help",
+      "perl script.pl input.txt output.txt"
+    ],
+    "features": ["feature 1", "feature 2"],
+    "notes": ["important note 1", "important note 2"]
+  },
+  "code_structure": {
+    "functions": [
+      {
+        "name": "function_name",
+        "description": "what it does",
+        "parameters": ["param1", "param2"]
+      }
+    ],
+    "main_sections": [
+      "Configuration",
+      "Main Logic", 
+      "Helper Functions",
+      "Error Handling"
+    ]
+  },
+  "best_practices": [
+    "Modern Perl practices used",
+    "Error handling implemented",
+    "Code documentation included"
+  ],
+  "testing": {
+    "test_cases": [
+      "test case 1 description",
+      "test case 2 description"
+    ],
+    "sample_input": "example input data",
+    "expected_output": "example output"
+  }
+}
+
+IMPORTANT RULES:
+1. ALWAYS return valid JSON - no markdown, no code blocks, just pure JSON
+2. Include complete, executable Perl code in the "main_script" field
+3. Use proper escaping for quotes and newlines in JSON strings
+4. Include comprehensive error handling in your Perl code
+5. Follow modern Perl best practices (use strict; use warnings;)
+6. Provide clear, detailed documentation
+7. If the request is unclear, still provide a valid JSON response with appropriate error status
+
+Example of proper JSON escaping for Perl code:
+"main_script": "#!/usr/bin/env perl\\nuse strict;\\nuse warnings;\\n\\nprint \\"Hello World\\\\n\\";"
+
+Remember: Your entire response must be parseable as JSON. No explanatory text outside the JSON structure.
+"""
 
 console = Console()
 
@@ -34,7 +124,8 @@ class ClicodConfig:
             'default_model': 'gemini-2.5-flash',
             'save_location': str(Path.cwd()),
             'auto_save': False,
-            'streaming': False
+            'streaming': False,
+            'json_format': True
         }
         
         if self.config_file.exists():
@@ -67,7 +158,6 @@ class ClicodConfig:
     
     def get_api_key(self):
         """Get API key with fallback to environment"""
-        # Priority: config file -> environment variable -> prompt user
         api_key = self.get('gemini_api_key')
         if not api_key:
             api_key = os.getenv('GEMINI_API_KEY')
@@ -85,7 +175,6 @@ class ClicodGenerator:
     def __init__(self, model_name=None, config=None):
         self.config = config or ClicodConfig()
         
-        # Get API key from configuration
         self.api_key = self.config.get_api_key()
         
         if not self.api_key:
@@ -94,15 +183,9 @@ class ClicodGenerator:
             sys.exit(1)
         
         try:
-            # Import and configure the Google Gen AI SDK
             from google import genai
-            
-            # Initialize the client with the API key
             self.client = genai.Client(api_key=self.api_key)
-            
-            # Use model from parameter, config, or default
             self.model_name = model_name or self.config.get('default_model', 'gemini-2.5-flash')
-            
             console.print(f"✅ [green]clicod using model: {self.model_name}[/green]")
         except ImportError:
             console.print("❌ [red]Error: google-genai SDK not found![/red]")
@@ -112,47 +195,25 @@ class ClicodGenerator:
             console.print(f"❌ [red]Error configuring Gemini API: {str(e)}[/red]")
             sys.exit(1)
         
-        # Enhanced system prompt for Perl code generation
-        self.system_prompt = """
-You are an expert Perl programmer. Generate high-quality, production-ready Perl code with:
-
-1. Modern Perl practices (use strict; use warnings;)
-2. Proper variable scoping and error handling
-3. Clear documentation and comments
-4. CPAN module recommendations when appropriate
-5. Complete executable scripts with examples
-
-Always wrap Perl code in ```
-code here
-```
-
-Focus on backend development, system automation, and data processing tasks.
-"""
+        self.system_prompt = SYSTEM_PROMPT
 
     def generate_code(self, prompt, save_to_file=None, filename=None):
+        """Generate code with structured JSON response"""
         try:
-            # Use config defaults if not specified
             if save_to_file is None:
                 save_to_file = self.config.get('auto_save', False)
             
-            # Prepare the enhanced prompt
             enhanced_prompt = f"""
 {self.system_prompt}
 
 User Request: {prompt}
 
-Please provide:
-1. Complete Perl script with proper shebang and pragmas
-2. Required CPAN modules (if any)
-3. Usage examples
-4. Brief explanation of the approach
-
-Generate clean, well-documented Perl code following modern best practices.
+Remember: Respond ONLY with valid JSON following the exact structure specified above. 
+Include complete, executable Perl code with proper escaping in the JSON response.
 """
             
-            console.print(f"🤖 [yellow]clicod generating code using {self.model_name}...[/yellow]")
+            console.print(f"🤖 [yellow]clicod generating structured code using {self.model_name}...[/yellow]")
             
-            # Use the new SDK method with proper parameters
             response = self.client.models.generate_content(
                 model=self.model_name,
                 contents=enhanced_prompt,
@@ -160,23 +221,30 @@ Generate clean, well-documented Perl code following modern best practices.
                     'temperature': 0.1,
                     'top_p': 0.8,
                     'top_k': 20,
-                    'max_output_tokens': 4000,
+                    'max_output_tokens': 6000,
                 }
             )
             
             if response.text:
-                # Display the response with rich formatting
-                console.print("\n" + "="*60)
-                console.print(Panel(Markdown(response.text), title=f"clicod Generated Code ({self.model_name})", border_style="green"))
+                # Parse the JSON response
+                parsed_response = self._parse_json_response(response.text)
                 
-                # Extract Perl code blocks
-                perl_code = self._extract_code_blocks(response.text)
-                cpan_modules = self._extract_cpan_modules(response.text)
-                
-                if perl_code and save_to_file:
-                    self._save_code_to_file(perl_code, filename, cpan_modules)
-                
-                return response.text, perl_code, cpan_modules
+                if parsed_response:
+                    self._render_structured_output(parsed_response)
+                    
+                    # Extract Perl code from JSON structure
+                    perl_code = parsed_response.get('perl_code', {}).get('main_script', '')
+                    dependencies = parsed_response.get('dependencies', {})
+                    
+                    if perl_code and save_to_file:
+                        self._save_structured_code(parsed_response, filename)
+                    
+                    return parsed_response, perl_code, dependencies
+                else:
+                    console.print("❌ [red]Failed to parse JSON response from model[/red]")
+                    # Fallback to displaying raw response
+                    console.print(Panel(response.text, title="Raw Response (JSON Parse Failed)", border_style="red"))
+                    return None, None, None
             else:
                 console.print("❌ [red]No response generated from Gemini[/red]")
                 return None, None, None
@@ -185,39 +253,207 @@ Generate clean, well-documented Perl code following modern best practices.
             console.print(f"❌ [red]Error generating code: {str(e)}[/red]")
             return None, None, None
 
-    def _extract_code_blocks(self, text):
-        """Extract Perl code from markdown code blocks"""
-        import re
-        
-        # Look for ```
-        perl_blocks = re.findall(r'``````', text, re.DOTALL)
-        if perl_blocks:
-            return '\n\n'.join(perl_blocks)
-        
-        # Fallback to any code blocks
-        code_blocks = re.findall(r'``````', text, re.DOTALL)
-        if code_blocks:
-            return '\n\n'.join(code_blocks)
-        
-        return None
+    def _parse_json_response(self, response_text):
+        """Parse JSON response with error handling"""
+        try:
+            # Clean the response text
+            cleaned_text = response_text.strip()
+            
+            # Try to find JSON content if wrapped in markdown
+            if '```' in cleaned_text and 'json' in cleaned_text:
+                start = cleaned_text.find('```json') + 7
+                end = cleaned_text.find('```', start)
+                if end != -1:
+                    cleaned_text = cleaned_text[start:end].strip()
+            elif '```' in cleaned_text:
+                start = cleaned_text.find('```') + 3
+                end = cleaned_text.rfind('```')
+                if end != -1 and end > start:
+                    cleaned_text = cleaned_text[start:end].strip()
+            
+            # Parse JSON
+            parsed = json.loads(cleaned_text)
+            return parsed
+            
+        except json.JSONDecodeError as e:
+            console.print(f"❌ [red]JSON parsing error: {str(e)}[/red]")
+            console.print(f"🔍 [yellow]Response preview: {response_text[:200]}...[/yellow]")
+            return None
+        except Exception as e:
+            console.print(f"❌ [red]Error processing response: {str(e)}[/red]")
+            return None
 
-    def _extract_cpan_modules(self, text):
-        """Extract CPAN module installation commands"""
-        import re
+    def _render_structured_output(self, parsed_response):
+        """Render the structured JSON response with rich formatting"""
+        console.print("\n" + "="*80)
         
-        modules = []
-        # Look for cpan install commands
-        cpan_matches = re.findall(r'cpan install ([A-Za-z0-9::_\-\s]+)', text, re.IGNORECASE)
-        modules.extend(cpan_matches)
+        # Status and metadata
+        status = parsed_response.get('status', 'unknown')
+        metadata = parsed_response.get('metadata', {})
         
-        # Look for use Module::Name statements
-        use_matches = re.findall(r'use\s+([A-Za-z0-9::_]+)', text)
-        modules.extend([m for m in use_matches if '::' in m and m not in ['strict', 'warnings']])
+        status_color = "green" if status == "success" else "red"
+        console.print(f"📊 [bold {status_color}]Status: {status.upper()}[/bold {status_color}]")
         
-        return list(set(modules))  # Remove duplicates
+        if metadata:
+            console.print(f"🔧 [blue]Complexity: {metadata.get('complexity_level', 'N/A')} | "
+                        f"Estimated Lines: {metadata.get('estimated_lines', 'N/A')}[/blue]")
+        
+        # Description and features
+        documentation = parsed_response.get('documentation', {})
+        if documentation.get('description'):
+            console.print(Panel(
+                documentation['description'], 
+                title="📝 Description", 
+                border_style="cyan"
+            ))
+        
+        # Perl code display
+        perl_code_section = parsed_response.get('perl_code', {})
+        main_script = perl_code_section.get('main_script', '')
+        
+        if main_script:
+            console.print(Panel(
+                Syntax(main_script, "perl", theme="monokai", line_numbers=True),
+                title="🐪 Generated Perl Script",
+                border_style="green"
+            ))
+        
+        # Additional files
+        additional_files = perl_code_section.get('additional_files', [])
+        if additional_files:
+            for file_info in additional_files:
+                console.print(Panel(
+                    Syntax(file_info.get('content', ''), "perl", theme="monokai"),
+                    title=f"📄 {file_info.get('filename', 'Additional File')} - {file_info.get('description', '')}",
+                    border_style="blue"
+                ))
+        
+        # Dependencies
+        dependencies = parsed_response.get('dependencies', {})
+        if dependencies:
+            self._render_dependencies(dependencies)
+        
+        # Code structure
+        code_structure = parsed_response.get('code_structure', {})
+        if code_structure:
+            self._render_code_structure(code_structure)
+        
+        # Usage examples
+        usage_examples = documentation.get('usage_examples', [])
+        if usage_examples:
+            examples_text = "\n".join([f"• {example}" for example in usage_examples])
+            console.print(Panel(
+                examples_text,
+                title="🚀 Usage Examples",
+                border_style="yellow"
+            ))
+        
+        # Testing information
+        testing = parsed_response.get('testing', {})
+        if testing:
+            self._render_testing_info(testing)
+        
+        # Best practices
+        best_practices = parsed_response.get('best_practices', [])
+        if best_practices:
+            practices_text = "\n".join([f"✓ {practice}" for practice in best_practices])
+            console.print(Panel(
+                practices_text,
+                title="✨ Best Practices Applied",
+                border_style="green"
+            ))
 
-    def _save_code_to_file(self, code, filename=None, cpan_modules=None):
-        """Save generated code to a file with CPAN modules info"""
+    def _render_dependencies(self, dependencies):
+        """Render dependencies section"""
+        table = Table(title="📦 Dependencies")
+        table.add_column("Type", style="cyan")
+        table.add_column("Name", style="green")
+        table.add_column("Install Command", style="yellow")
+        table.add_column("Purpose", style="blue")
+        
+        # Core modules
+        core_modules = dependencies.get('core_modules', [])
+        for module in core_modules:
+            table.add_row("Core", module, "Built-in", "Perl core module")
+        
+        # CPAN modules
+        cpan_modules = dependencies.get('cpan_modules', [])
+        for module_info in cpan_modules:
+            if isinstance(module_info, dict):
+                table.add_row(
+                    "CPAN",
+                    module_info.get('name', ''),
+                    module_info.get('install_command', ''),
+                    module_info.get('purpose', '')
+                )
+            else:
+                table.add_row("CPAN", str(module_info), f"cpan install {module_info}", "")
+        
+        # System requirements
+        system_reqs = dependencies.get('system_requirements', [])
+        for req in system_reqs:
+            table.add_row("System", req, "See documentation", "System requirement")
+        
+        if table.rows:
+            console.print(table)
+
+    def _render_code_structure(self, code_structure):
+        """Render code structure information"""
+        functions = code_structure.get('functions', [])
+        if functions:
+            func_table = Table(title="🔧 Functions")
+            func_table.add_column("Function", style="cyan")
+            func_table.add_column("Description", style="green")
+            func_table.add_column("Parameters", style="yellow")
+            
+            for func in functions:
+                if isinstance(func, dict):
+                    params = ", ".join(func.get('parameters', []))
+                    func_table.add_row(
+                        func.get('name', ''),
+                        func.get('description', ''),
+                        params
+                    )
+            
+            console.print(func_table)
+        
+        main_sections = code_structure.get('main_sections', [])
+        if main_sections:
+            sections_text = "\n".join([f"• {section}" for section in main_sections])
+            console.print(Panel(
+                sections_text,
+                title="🏗️ Code Structure",
+                border_style="blue"
+            ))
+
+    def _render_testing_info(self, testing):
+        """Render testing information"""
+        test_cases = testing.get('test_cases', [])
+        sample_input = testing.get('sample_input', '')
+        expected_output = testing.get('expected_output', '')
+        
+        if test_cases or sample_input or expected_output:
+            testing_content = ""
+            
+            if test_cases:
+                testing_content += "Test Cases:\n"
+                testing_content += "\n".join([f"• {case}" for case in test_cases])
+                testing_content += "\n\n"
+            
+            if sample_input:
+                testing_content += f"Sample Input:\n{sample_input}\n\n"
+            
+            if expected_output:
+                testing_content += f"Expected Output:\n{expected_output}"
+            
+            console.print(Panel(
+                testing_content.strip(),
+                title="🧪 Testing Information",
+                border_style="magenta"
+            ))
+
+    def _save_structured_code(self, parsed_response, filename=None):
+        """Save generated code with comprehensive metadata"""
         save_location = Path(self.config.get('save_location', Path.cwd()))
         
         if not filename:
@@ -229,32 +465,68 @@ Generate clean, well-documented Perl code following modern best practices.
         filepath = save_location / filename
         
         try:
+            perl_code_section = parsed_response.get('perl_code', {})
+            main_script = perl_code_section.get('main_script', '')
+            dependencies = parsed_response.get('dependencies', {})
+            documentation = parsed_response.get('documentation', {})
+            
             with open(filepath, 'w') as f:
+                # Header with metadata
                 f.write("#!/usr/bin/env perl\n")
                 f.write("# Generated by clicod - CLI Code Generator\n")
                 f.write(f"# Model: {self.model_name}\n")
-                f.write("# https://github.com/yourusername/clicod\n")
+                f.write("# https://github.com/happybear-21/clicod\n")
                 f.write("# " + "="*50 + "\n")
                 
+                # Description
+                if documentation.get('description'):
+                    f.write(f"# Description: {documentation['description']}\n")
+                
+                # Dependencies
+                cpan_modules = dependencies.get('cpan_modules', [])
                 if cpan_modules:
                     f.write("#\n# Required CPAN modules:\n")
                     for module in cpan_modules:
-                        f.write(f"# cpan install {module}\n")
-                    f.write("#\n")
+                        if isinstance(module, dict):
+                            f.write(f"# {module.get('install_command', '')}\n")
+                        else:
+                            f.write(f"# cpan install {module}\n")
                 
-                f.write("\n")
-                f.write(code)
+                # Usage examples
+                usage_examples = documentation.get('usage_examples', [])
+                if usage_examples:
+                    f.write("#\n# Usage examples:\n")
+                    for example in usage_examples:
+                        f.write(f"# {example}\n")
+                
+                f.write("#\n" + "# " + "="*50 + "\n\n")
+                
+                # Main script content
+                f.write(main_script)
+            
+            # Save additional files
+            additional_files = perl_code_section.get('additional_files', [])
+            for file_info in additional_files:
+                add_filename = file_info.get('filename', 'additional.pl')
+                add_filepath = save_location / add_filename
+                with open(add_filepath, 'w') as f:
+                    f.write(file_info.get('content', ''))
+                console.print(f"✅ [green]Additional file saved: {add_filepath}[/green]")
             
             # Make file executable on Unix systems
             try:
                 os.chmod(filepath, 0o755)
             except:
-                pass  # Skip on Windows
+                pass
             
             console.print(f"✅ [green]Code saved to {filepath}[/green]")
             
+            # Show dependency installation commands
             if cpan_modules:
-                console.print(f"📦 [blue]Required modules: {', '.join(cpan_modules)}[/blue]")
+                console.print("📦 [blue]Install dependencies with:[/blue]")
+                for module in cpan_modules:
+                    if isinstance(module, dict):
+                        console.print(f"   {module.get('install_command', '')}")
             
             console.print(f"🏃 [blue]Run with: perl {filepath}[/blue]")
             
@@ -262,7 +534,7 @@ Generate clean, well-documented Perl code following modern best practices.
             console.print(f"❌ [red]Error saving file: {str(e)}[/red]")
 
     def stream_generate(self, prompt):
-        """Generate code with streaming response"""
+        """Generate code with streaming response (JSON format)"""
         try:
             enhanced_prompt = f"{self.system_prompt}\n\nUser Request: {prompt}"
             
@@ -274,17 +546,29 @@ Generate clean, well-documented Perl code following modern best practices.
             )
             
             full_text = ""
+            console.print("📡 [blue]Streaming response...[/blue]\n")
+            
             for chunk in response:
                 if chunk.text:
                     console.print(chunk.text, end="")
                     full_text += chunk.text
+            
+            console.print("\n\n🔄 [yellow]Processing streamed JSON response...[/yellow]")
+            
+            # Parse and render the complete JSON response
+            parsed_response = self._parse_json_response(full_text)
+            if parsed_response:
+                console.print("\n" + "="*80)
+                console.print("📊 [bold green]Parsed Structured Response:[/bold green]")
+                self._render_structured_output(parsed_response)
+                return parsed_response
             
             return full_text
         except Exception as e:
             console.print(f"❌ [red]Error streaming code: {str(e)}[/red]")
             return None
 
-# CLI Commands
+# CLI Commands remain the same but with updated calls to the new methods
 @click.group()
 @click.version_option(version='1.0.0', prog_name='clicod')
 @click.option('--model', '-m', help='Specify Gemini model to use')
@@ -293,7 +577,7 @@ def cli(ctx, model):
     """
     🚀 clicod - CLI Code Generator
     
-    Generate Perl scripts using Gemini AI with natural language descriptions.
+    Generate Perl scripts using Gemini AI with structured JSON responses.
     Configuration is stored in ~/.clicod/config.json
     """
     ctx.ensure_object(dict)
@@ -311,12 +595,11 @@ def generate(prompt, save, filename, interactive, stream):
     generator = click.get_current_context().obj['generator']
     config = click.get_current_context().obj['config']
     
-    # Use config defaults for streaming if not specified
     if not stream:
         stream = config.get('streaming', False)
     
     if interactive:
-        console.print("🚀 [bold blue]clicod - Interactive Code Generation[/bold blue]")
+        console.print("🚀 [bold blue]clicod - Interactive Structured Code Generation[/bold blue]")
         console.print(f"Using model: [green]{generator.model_name}[/green]")
         console.print("Commands: 'exit', 'quit', 'config', 'save on/off', 'stream on/off'\n")
         
@@ -333,7 +616,7 @@ def generate(prompt, save, filename, interactive, stream):
                     continue
                 
                 if user_input.lower().startswith('save '):
-                    setting = user_input.split(' ', 1).lower()
+                    setting = user_input.split(' ', 1)[1].lower()
                     if setting in ['on', 'true', 'yes']:
                         config.set('auto_save', True)
                         config.save_config()
@@ -345,7 +628,7 @@ def generate(prompt, save, filename, interactive, stream):
                     continue
                 
                 if user_input.lower().startswith('stream '):
-                    setting = user_input.split(' ', 1).lower()
+                    setting = user_input.split(' ', 1)[1].lower()
                     if setting in ['on', 'true', 'yes']:
                         stream = True
                         console.print("✅ [green]Streaming enabled for this session[/green]")
@@ -355,18 +638,17 @@ def generate(prompt, save, filename, interactive, stream):
                     continue
                 
                 if stream:
-                    full_response = generator.stream_generate(user_input)
-                    if full_response:
-                        code = generator._extract_code_blocks(full_response)
-                        modules = generator._extract_cpan_modules(full_response)
-                        if code and (config.get('auto_save') or Confirm.ask("\n💾 Save this code to file?")):
+                    parsed_response = generator.stream_generate(user_input)
+                    if parsed_response and isinstance(parsed_response, dict):
+                        perl_code = parsed_response.get('perl_code', {}).get('main_script', '')
+                        if perl_code and (config.get('auto_save') or Confirm.ask("\n💾 Save this code to file?")):
                             save_filename = Prompt.ask("Enter filename", default="clicod_script.pl")
-                            generator._save_code_to_file(code, save_filename, modules)
+                            generator._save_structured_code(parsed_response, save_filename)
                 else:
-                    response, code, modules = generator.generate_code(user_input, save)
-                    if code and not config.get('auto_save') and Confirm.ask("\n💾 Save this code to file?"):
+                    parsed_response, perl_code, dependencies = generator.generate_code(user_input, save)
+                    if parsed_response and not config.get('auto_save') and Confirm.ask("\n💾 Save this code to file?"):
                         save_filename = Prompt.ask("Enter filename", default="clicod_script.pl")
-                        generator._save_code_to_file(code, save_filename, modules)
+                        generator._save_structured_code(parsed_response, save_filename)
                     
         except KeyboardInterrupt:
             console.print("\n👋 [yellow]Thanks for using clicod![/yellow]")
@@ -379,14 +661,13 @@ def generate(prompt, save, filename, interactive, stream):
         prompt_text = ' '.join(prompt)
         
         if stream:
-            full_response = generator.stream_generate(prompt_text)
-            if full_response and save:
-                code = generator._extract_code_blocks(full_response)
-                modules = generator._extract_cpan_modules(full_response)
-                generator._save_code_to_file(code, filename, modules)
+            parsed_response = generator.stream_generate(prompt_text)
+            if parsed_response and isinstance(parsed_response, dict) and save:
+                generator._save_structured_code(parsed_response, filename)
         else:
-            response, code, modules = generator.generate_code(prompt_text, save, filename)
+            parsed_response, perl_code, dependencies = generator.generate_code(prompt_text, save, filename)
 
+# Keep all other CLI commands the same as they were in the original code
 @cli.command()
 @click.option('--set-key', is_flag=True, help='Set Gemini API key')
 @click.option('--set-model', help='Set default model')
@@ -453,23 +734,38 @@ def _show_current_config(config):
     table.add_row("Save Location", config.get('save_location', str(Path.cwd())))
     table.add_row("Auto Save", str(config.get('auto_save', False)))
     table.add_row("Streaming", str(config.get('streaming', False)))
+    table.add_row("JSON Format", str(config.get('json_format', True)))
     table.add_row("Config File", str(config.config_file))
     
     console.print(table)
 
 @cli.command()
 def test():
-    """Test Gemini API connection"""
+    """Test Gemini API connection with JSON format"""
     generator = click.get_current_context().obj['generator']
-    console.print(f"🔌 [blue]Testing clicod connection with {generator.model_name}...[/blue]")
+    console.print(f"🔌 [blue]Testing clicod connection with {generator.model_name} (JSON format)...[/blue]")
     
     try:
+        test_prompt = f"""
+{generator.system_prompt}
+
+User Request: Generate a simple Perl hello world script
+
+This is a test request. Please respond with the exact JSON format specified.
+"""
+        
         test_response = generator.client.models.generate_content(
             model=generator.model_name,
-            contents="Generate a simple Perl hello world script"
+            contents=test_prompt
         )
+        
         if test_response.text:
-            console.print("✅ [green]Connection successful![/green]")
+            parsed = generator._parse_json_response(test_response.text)
+            if parsed:
+                console.print("✅ [green]Connection and JSON parsing successful![/green]")
+                console.print(f"📊 [blue]Response status: {parsed.get('status', 'unknown')}[/blue]")
+            else:
+                console.print("⚠️ [yellow]Connection successful but JSON parsing failed[/yellow]")
         else:
             console.print("❌ [red]Connection failed - no response[/red]")
     except Exception as e:
@@ -477,47 +773,47 @@ def test():
 
 @cli.command()
 def examples():
-    """Show clicod usage examples"""
+    """Show clicod usage examples with JSON format"""
     examples_text = """
-## 🚀 clicod Usage Examples
+## 🚀 clicod Usage Examples (JSON Format)
 
 ### First Time Setup:
-```bash
+```
 clicod config --set-key  # Set your Gemini API key
 clicod config --show     # View current configuration
+clicod test             # Test JSON format connection
 ```
 
 ### Basic Usage:
-```bash
+```
 clicod generate "Create a CSV parser with error handling"
 clicod generate "Build a log file analyzer" --save
 clicod generate "Simple web scraper" --stream
 ```
 
-### Configuration:
-```bash
-clicod config --set-model gemini-2.5-pro
-clicod config --auto-save true
-clicod config --set-save-location ~/scripts
-```
+### JSON Response Structure:
+The AI now returns structured JSON with:
+- Complete Perl code with proper escaping
+- Detailed dependency information
+- Usage examples and testing info
+- Code structure documentation
+- Best practices applied
 
 ### Interactive Mode:
-```bash
+```
 clicod generate --interactive
-# Commands in interactive mode:
-# - save on/off
-# - stream on/off  
-# - config
-# - exit/quit
+# Enhanced with structured JSON responses
+# Better dependency tracking
+# Comprehensive code documentation
 ```
 
 ### Example Prompts:
 - "Create a Perl script to monitor disk usage and send alerts"
-- "Build a JSON parser with validation and error handling"
+- "Build a JSON parser with validation and error handling" 
 - "Generate a simple HTTP client with authentication"
 - "Create a log rotation script for system administration"
 """
-    console.print(Panel(examples_text, title="clicod Examples", border_style="blue"))
+    console.print(Panel(examples_text, title="clicod Examples (JSON Format)", border_style="blue"))
 
 @cli.command()
 def about():
@@ -525,14 +821,21 @@ def about():
     config = click.get_current_context().obj['config']
     
     about_text = f"""
-## 🚀 clicod - CLI Code Generator
+## 🚀 clicod - CLI Code Generator (JSON Format)
 
-**Version:** 1.0.0  
+**Version:** 1.0.0 (Enhanced JSON)
 **Configuration:** {config.config_file}
+
+**New Features:**
+- Structured JSON responses from AI
+- Enhanced dependency tracking
+- Comprehensive code documentation
+- Better error handling and parsing
+- Rich terminal output with syntax highlighting
 
 **Configuration stored in:** `{config.config_file}`
 """
-    console.print(Panel(about_text, title="About clicod", border_style="cyan"))
+    console.print(Panel(about_text, title="About clicod (JSON Enhanced)", border_style="cyan"))
 
 if __name__ == '__main__':
     cli()
